@@ -17,7 +17,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # ======================================================================
-# NEW: Perform System Update Before Proceeding
+# 1. Perform System Update Before Proceeding
 # ======================================================================
 echo -e "${BLUE}[*] Initializing full system update (Repositories + AUR)...${NC}"
 if ! yay -Syu; then
@@ -25,9 +25,10 @@ if ! yay -Syu; then
     exit 1
 fi
 echo -e "${GREEN}[+] System is fully up-to-date.${NC}\n"
-# ======================================================================
 
-# 1. Fetch live compromised package feeds (Atomic Arch Tracking Lists)
+# ======================================================================
+# 2. Fetch live compromised package feeds (Atomic Arch Tracking Lists)
+# ======================================================================
 echo -e "${BLUE}[*] Fetching latest community lists of compromised AUR packages...${NC}"
 
 # We pull from reliable community text repositories tracking the 1,500+ hijacked items
@@ -41,7 +42,7 @@ curl -s --max-time 5 "$MALICIOUS_LIST_URL" -o "$TMP_BLACKLIST"
 if [ ! -s "$TMP_BLACKLIST" ]; then
     echo -e "${YELLOW}[!] Warning: Could not fetch the live online threat list. Proceeding directly to AI evaluation layer...${NC}"
 else
-    # 2. Match the user's package against the blacklist
+    # Match the user's package against the blacklist
     echo -e "${BLUE}[*] Cross-referencing '${TARGET_PKG}' against known-bad repositories...${NC}"
 
     if grep -Fxq "$TARGET_PKG" "$TMP_BLACKLIST"; then
@@ -57,42 +58,125 @@ else
 fi
 rm -f "$TMP_BLACKLIST"
 
-# 3. Download the PKGBUILD/.install blueprints into memory
-echo -e "${BLUE}[*] Inspecting AUR package data blueprints for ${GREEN}${TARGET_PKG}${NC}..."
-pkg_data=$(yay -Gp "$TARGET_PKG" 2>/dev/null)
+# ======================================================================
+# 3. Dynamic LLM Environment Assessment
+# ======================================================================
+RUN_AI_AUDIT=true
+CHOSEN_MODEL=""
 
-if [ -z "$pkg_data" ]; then
-    echo -e "${RED}[-]/ Failed to retrieve AUR project data. Are you sure '${TARGET_PKG}' is a valid AUR package?${NC}"
-    exit 1
+# Check if ollama command exists and the daemon is running
+if ! command -v ollama &> /dev/null || ! curl -s http://localhost:11434/api/tags &> /dev/null; then
+    echo -e "${YELLOW}[!] Warning: Ollama is either not installed or the daemon is not running.${NC}"
+    echo -e "${YELLOW}[!] Skipping AI security audit phase.${NC}"
+    RUN_AI_AUDIT=false
 fi
 
-# 4. Pass the files directly to the local llama3.2 instance via Ollama
-echo -e "${YELLOW}[*] Feeding build structure to local llama3.2 model for safety auditing...${NC}"
-echo "----------------------------------------------------------------------"
+if [ "$RUN_AI_AUDIT" = true ]; then
+    echo -e "${BLUE}[*] Checking local Ollama instance for usable models...${NC}"
 
-AI_PROMPT="You are an expert Linux security auditor. Inspect the following Arch Linux AUR build files for malicious code injections, supply chain attacks, hidden backdoors, or privilege escalations. Check for unexpected network calls (curl/wget), malicious package managers (npm, bun, pip) pulling unauthorized tracking code like 'atomic-lockfile' or 'js-digest', obfuscated bash strings (base64, hex, eval), or unauthorized modifications to system profiles within install hooks. Keep your analysis concise. Flag any lines that look dangerous. If everything looks standard, start your response with 'STATUS: CLEAN'."
+    # Check specifically for llama3.2:latest first
+    if ollama list | grep -q -E "llama3\.2:latest"; then
+        CHOSEN_MODEL="llama3.2:latest"
+        echo -e "${GREEN}[+] Found preferred model: ${CHOSEN_MODEL}${NC}"
+    else
+        # If llama3.2:latest isn't there, look for ANY other model containing the word "llama"
+        ANY_LLAMA=$(ollama list | grep -i "llama" | awk '{print $1}' | head -n 1)
 
-(echo "$AI_PROMPT"; echo -e "\n--- BEGIN BUILD FILES FOR $TARGET_PKG ---"; echo "$pkg_data") | ollama run llama3.2:latest
+        if [ -n "$ANY_LLAMA" ]; then
+            CHOSEN_MODEL="$ANY_LLAMA"
+            echo -e "${YELLOW}[!] llama3.2:latest not found, but detected alternative fallback: ${CHOSEN_MODEL}${NC}"
+        else
+            # No llama models exist at all. Prompt user to install llama3.2:latest
+            echo -e "${YELLOW}[!] No 'llama' models detected on your local system.${NC}"
+            while true; do
+                read -p "Would you like to pull/install 'llama3.2:latest' now? (y/n): " download_confirm
+                case "$download_confirm" in
+                    [yY] )
+                        echo -e "${BLUE}[*] Pulling llama3.2:latest via Ollama... (This might take a moment)${NC}"
+                        if ollama pull llama3.2:latest; then
+                            CHOSEN_MODEL="llama3.2:latest"
+                            echo -e "${GREEN}[+] Successfully downloaded llama3.2:latest.${NC}"
+                        else
+                            echo -e "${RED}[-] Failed to download model. Skipping AI audit layer.${NC}"
+                            RUN_AI_AUDIT=false
+                        fi
+                        break
+                        ;;
+                    [nN] )
+                        echo -e "${YELLOW}[!] Skipping AI audit layer by user request.${NC}"
+                        RUN_AI_AUDIT=false
+                        break
+                        ;;
+                    * )
+                        echo "Please type 'y' (yes) or 'n' (no)."
+                        ;;
+                esac
+            done
+        fi
+    fi
+fi
 
-echo "----------------------------------------------------------------------"
-echo -e "${YELLOW}[?] Review the local model's risk assessment above.${NC}"
+# ======================================================================
+# 4. Download and Scan Package Blueprints (If AI Enabled)
+# ======================================================================
+if [ "$RUN_AI_AUDIT" = true ] && [ -n "$CHOSEN_MODEL" ]; then
+    echo -e "${BLUE}[*] Inspecting AUR package data blueprints for ${GREEN}${TARGET_PKG}${NC}..."
+    pkg_data=$(yay -Gp "$TARGET_PKG" 2>/dev/null)
 
-# 5. Halt pipeline and request user evaluation before execution
-while true; do
-    read -p "Are you completely satisfied with the AI output? Proceed with installation? (y/n): " confirm
-    case "$confirm" in
-        [yY] )
-            echo -e "${GREEN}[+] Triggering build pipeline for ${TARGET_PKG}...${NC}"
-            # FIXED: Bypasses diff and edit prompts cleanly on modern versions of yay
-            yay -S --aur --diffmenu=false --editmenu=false "$TARGET_PKG"
-            break
-            ;;
-        [nN] )
-            echo -e "${RED}[!] Installation safely aborted by user.${NC}"
-            exit 0
-            ;;
-        * )
-            echo "Please type 'y' (yes) or 'n' (no)."
-            ;;
-    esac
-done
+    if [ -z "$pkg_data" ]; then
+        echo -e "${RED}[-]/ Failed to retrieve AUR project data. Are you sure '${TARGET_PKG}' is a valid AUR package?${NC}"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}[*] Feeding build structure to local ${CHOSEN_MODEL} model for safety auditing...${NC}"
+    echo "----------------------------------------------------------------------"
+
+    AI_PROMPT="You are an expert Linux security auditor. Inspect the following Arch Linux AUR build files for malicious code injections, supply chain attacks, hidden backdoors, or privilege escalations. Check for unexpected network calls (curl/wget), malicious package managers (npm, bun, pip) pulling unauthorized tracking code like 'atomic-lockfile' or 'js-digest', obfuscated bash strings (base64, hex, eval), or unauthorized modifications to system profiles within install hooks. Keep your analysis concise. Flag any lines that look dangerous. If everything looks standard, start your response with 'STATUS: CLEAN'."
+
+    (echo "$AI_PROMPT"; echo -e "\n--- BEGIN BUILD FILES FOR $TARGET_PKG ---"; echo "$pkg_data") | ollama run "$CHOSEN_MODEL"
+
+    echo "----------------------------------------------------------------------"
+    echo -e "${YELLOW}[?] Review the local model's risk assessment above.${NC}"
+
+    # Request manual evaluation confirmation after AI output
+    while true; do
+        read -p "Are you completely satisfied with the AI output? Proceed with installation? (y/n): " confirm
+        case "$confirm" in
+            [yY] )
+                break
+                ;;
+            [nN] )
+                echo -e "${RED}[!] Installation safely aborted by user.${NC}"
+                exit 0
+                ;;
+            * )
+                echo "Please type 'y' (yes) or 'n' (no)."
+                ;;
+        esac
+    done
+else
+    # Fallback gatekeeper if AI scanning was skipped or disabled
+    echo -e "${YELLOW}[!] Proceeding without an AI security audit.${NC}"
+    while true; do
+        read -p "Do you want to proceed with installing ${TARGET_PKG} anyway? (y/n): " raw_confirm
+        case "$raw_confirm" in
+            [yY] )
+                break
+                ;;
+            [nN] )
+                echo -e "${RED}[!] Installation safely aborted by user.${NC}"
+                exit 0
+                ;;
+            * )
+                echo "Please type 'y' (yes) or 'n' (no)."
+                ;;
+        esac
+    done
+fi
+
+# ======================================================================
+# 5. Execute Package Build Pipeline
+# ======================================================================
+echo -e "${GREEN}[+] Triggering build pipeline for ${TARGET_PKG}...${NC}"
+# Bypasses diff and edit prompts cleanly on modern versions of yay
+yay -S --aur --diffmenu=false --editmenu=false "$TARGET_PKG"
