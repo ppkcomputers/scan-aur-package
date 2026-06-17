@@ -73,7 +73,7 @@ fi
 
 if [ "$RUN_AI_AUDIT" = true ]; then
     echo -e "${BLUE}[*] Checking local Ollama instance for usable models...${NC}"
-    
+
     # Check specifically for llama3.2:latest first
     if ollama list | grep -q -E "llama3\.2:latest"; then
         CHOSEN_MODEL="llama3.2:latest"
@@ -81,7 +81,7 @@ if [ "$RUN_AI_AUDIT" = true ]; then
     else
         # If llama3.2:latest isn't there, look for ANY other model containing the word "llama"
         ANY_LLAMA=$(ollama list | grep -i "llama" | awk '{print $1}' | head -n 1)
-        
+
         if [ -n "$ANY_LLAMA" ]; then
             CHOSEN_MODEL="$ANY_LLAMA"
             echo -e "${YELLOW}[!] llama3.2:latest not found, but detected alternative fallback: ${CHOSEN_MODEL}${NC}"
@@ -117,14 +117,13 @@ if [ "$RUN_AI_AUDIT" = true ]; then
 fi
 
 # ======================================================================
-# NEW: Prompt to Skip Scan (Only if AI environment is actually available)
+# Prompt to Skip Scan (Only if AI environment is actually available)
 # ======================================================================
 if [ "$RUN_AI_AUDIT" = true ] && [ -n "$CHOSEN_MODEL" ]; then
     while true; do
         read -p "Do you want to run the AI security scan on this package? (y/n): " scan_confirm
         case "$scan_confirm" in
             [yY] )
-                # Keep RUN_AI_AUDIT as true and proceed
                 break
                 ;;
             [nN] )
