@@ -1,5 +1,5 @@
 # scan-aur-package
-#AUR Package Security Scanner
+# AUR Package Security Scanner
 A bash script designed to audit AUR packages before installation. It scans packages against a blacklist of known compromised entries and optionally leverages a local AI model via Ollama to analyze PKGBUILD and *.install files for potential malware, obfuscated code, or unauthorized remote network calls.
 
 Features
